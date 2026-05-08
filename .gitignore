@@ -19,3 +19,11 @@ temp/
 # IDE
 .vscode/
 .idea/
+
+#  特定文件
+Prompt.md
+test_ds_httpx.py
+test_ds_openai.py
+test_response.py
+est_mock_empty.py
+
