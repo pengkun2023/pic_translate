@@ -2,7 +2,7 @@
 set -e
 
 APP_NAME="pic-translate"
-VERSION="1.0.0"
+VERSION="0.0.2"
 ARCH="amd64"
 DEB_DIR="${APP_NAME}_${VERSION}_${ARCH}"
 

@@ -4,10 +4,9 @@
 
 ## ✨ 核心特性
 
-- 🎯 **全局快捷键触发**: 默认快捷键 `<ctrl>+<alt>+x`，随时随地呼出截屏框。
-- 🖼️ **高效本地 OCR**: 使用 `Tesseract-OCR` 进行离线图像文字识别，保护隐私，速度极快。
-- 🧠 **AI 智能翻译**: 原生接入 DeepSeek v4 Flash 官方 Python SDK，利用大模型的强大推理能力进行语境翻译。
-- 🔧 **可视化配置**: 拥有系统托盘 (System Tray) 图标，支持通过 GUI 设置界面直接填写和修改 API Key，配置自动持久化保存。
+- 🎯 **自建截图选框**: 摆脱第三方截图工具的坐标限制，自带全屏透明遮罩选框，使用更加丝滑流畅。
+- 🖼️ **原位贴片显示**: 翻译结果支持**“原位覆盖显示”**模式，窗口将精确覆盖在你刚才截图的文字上方，体验如同在图片上直接翻译一般！
+- 🔧 **高自由度自定义**: 拥有系统托盘 (System Tray) 图标，支持通过 GUI 设置界面直接填写 API Key、更改**字体大小、文字颜色、背景颜色**等样式，配置自动持久化保存。
 - 🪟 **悬浮窗结果展示**: 翻译结果显示在无边框、半透明的置顶窗口中，支持自由拖拽和“一键复制”。
 - 📦 **开箱即用**: 提供一键打包的 `.deb` 安装包，自动生成桌面图标和应用菜单入口。
 
@@ -18,8 +17,8 @@
 ### 1. 系统级依赖项 (Ubuntu/Debian)
 ```bash
 sudo apt update
-# scrot 用于截图; tesseract 用于 OCR 识别; libxcb-cursor0 用于解决 PyQt6 鼠标指针库缺失问题
-sudo apt install scrot tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim libxcb-cursor0
+# tesseract 用于 OCR 识别; libxcb-cursor0 用于解决 PyQt6 鼠标指针库缺失问题
+sudo apt install tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim libxcb-cursor0
 ```
 
 ### 2. Python 环境

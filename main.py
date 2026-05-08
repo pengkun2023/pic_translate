@@ -12,24 +12,27 @@ from pynput import keyboard
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QTextEdit, 
                              QPushButton, QHBoxLayout, QSystemTrayIcon, QMenu,
-                             QDialog, QLabel, QLineEdit, QMessageBox)
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
-from PyQt6.QtGui import QIcon, QAction
+                             QDialog, QLabel, QLineEdit, QMessageBox, QComboBox, QSpinBox)
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QRect, QPoint
+from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QPen
 
 # ==========================================
 # CONFIG: 配置项集中存放与本地持久化
 # ==========================================
 DEFAULT_CONFIG = {
-    "screenshot_cmd": ["scrot", "-s", "-o"],  # 使用 scrot 框选截图，-o 覆盖同名文件
     "screenshot_path": "/tmp/pic_translate_capture.png",
     "hotkey": "<ctrl>+<alt>+x",
-    "ocr_lang": "eng+chi_sim",  # 确保系统已安装 tesseract-ocr-eng 和 tesseract-ocr-chi-sim
+    "ocr_lang": "eng+chi_sim",
     "api_provider": "DeepSeek",
     "api_url": "https://api.deepseek.com",
-    "api_key": "",  # 默认置空，让用户在 UI 中配置
-    "api_model": "deepseek-v4-flash",  # 强烈建议使用deepseek-v4-flash，比较快
+    "api_key": "",
+    "api_model": "deepseek-v4-pro",
     "win_width": 400,
     "win_height": 300,
+    "font_size": 14,
+    "text_color": "#000000",
+    "bg_color": "#FAFAFA",
+    "display_mode": "in_place" # 'in_place' (原位覆盖) 或 'floating' (悬浮窗)
 }
 
 CONFIG = DEFAULT_CONFIG.copy()
@@ -61,36 +64,20 @@ def save_config():
 load_config()
 
 # ==========================================
-# 信号类：用于子线程与 GUI 主线程通信
+# 信号类
 # ==========================================
 class WorkerSignals(QObject):
     update_text = pyqtSignal(str)
     show_window = pyqtSignal()
     error_occurred = pyqtSignal(str)
 
+class ControllerSignals(QObject):
+    start_snipper = pyqtSignal()
+
 # ==========================================
 # 后台工作逻辑
 # ==========================================
-def take_screenshot() -> bool:
-    """调用系统工具进行截图，返回是否成功"""
-    print("[Screenshot] 开始截图...")
-    try:
-        # 阻塞等待用户框选完成
-        cmd = CONFIG["screenshot_cmd"] + [CONFIG["screenshot_path"]]
-        subprocess.run(cmd, check=True)
-        if os.path.exists(CONFIG["screenshot_path"]):
-            print("[Screenshot] 截图成功")
-            return True
-        return False
-    except subprocess.CalledProcessError as e:
-        print(f"[Screenshot] 取消截图或发生错误: {e}")
-        return False
-    except Exception as e:
-        print(f"[Screenshot] 发生未知错误: {e}")
-        return False
-
 def do_ocr() -> str:
-    """读取截图文件进行 OCR 识别"""
     print("[OCR] 开始识别文字...")
     try:
         img = Image.open(CONFIG["screenshot_path"])
@@ -103,7 +90,6 @@ def do_ocr() -> str:
         raise RuntimeError(f"OCR 识别失败: {e}")
 
 def translate_text(text: str) -> str:
-    """调用大模型 API 进行翻译"""
     if not text:
         return ""
     
@@ -112,7 +98,7 @@ def translate_text(text: str) -> str:
     
     print(f"[{CONFIG['api_provider']}] 开始翻译...")
     try:
-        # 修复 httpx 不识别 socks:// 协议的问题（强制转换为 socks5://）
+        # 修复 httpx 不识别 socks:// 的问题
         for key in ['all_proxy', 'ALL_PROXY', 'http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY']:
             if key in os.environ and os.environ[key].startswith('socks://'):
                 os.environ[key] = os.environ[key].replace('socks://', 'socks5://')
@@ -142,18 +128,11 @@ def translate_text(text: str) -> str:
         raise RuntimeError(f"翻译失败: {e}")
 
 def workflow_thread(signals: WorkerSignals):
-    """完整的截图翻译工作流（在子线程运行）"""
+    """翻译工作流（在子线程运行，截图已经在主线程完成了）"""
     try:
-        # 1. 截图
-        success = take_screenshot()
-        if not success:
-            return
-            
-        # 2. 唤起窗口显示“识别中...”
         signals.show_window.emit()
         signals.update_text.emit("正在识别文字...")
         
-        # 3. OCR 识别
         text = do_ocr()
         if not text:
             signals.update_text.emit("未识别到文字。")
@@ -161,12 +140,118 @@ def workflow_thread(signals: WorkerSignals):
             
         signals.update_text.emit(f"【原文】\n{text}\n\n正在翻译...")
         
-        # 4. 翻译
         translated = translate_text(text)
         signals.update_text.emit(f"【原文】\n{text}\n\n【翻译】\n{translated}")
         
     except Exception as e:
         signals.error_occurred.emit(str(e))
+
+# ==========================================
+# GUI: 截图选框 (Snipper)
+# ==========================================
+class Snipper(QWidget):
+    capture_complete = pyqtSignal(QRect)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMouseTracking(True)
+        
+        self.begin = QPoint()
+        self.end = QPoint()
+        self.is_drawing = False
+
+    def start_capture(self):
+        # 计算所有显示器合并后的虚拟桌面大区域
+        virtual_rect = QRect()
+        for s in QApplication.screens():
+            virtual_rect = virtual_rect.united(s.geometry())
+            
+        self.setGeometry(virtual_rect)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.show()
+        self.activateWindow()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        # 绘制全屏半透明遮罩
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
+        
+        if self.is_drawing:
+            selection_rect = QRect(self.begin, self.end).normalized()
+            # 挖空选区，让其完全透明以显示底层真实的桌面
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            painter.fillRect(selection_rect, Qt.GlobalColor.transparent)
+            
+            # 画一个边框
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            painter.setPen(QPen(QColor(97, 175, 239), 2))
+            painter.drawRect(selection_rect)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.begin = event.position().toPoint()
+            self.end = self.begin
+            self.is_drawing = True
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        if self.is_drawing:
+            self.end = event.position().toPoint()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.is_drawing = False
+            self.end = event.position().toPoint()
+            self.update()
+            
+            selection_rect = QRect(self.begin, self.end).normalized()
+            self.hide()
+            
+            if selection_rect.width() > 10 and selection_rect.height() > 10:
+                global_rect = QRect(
+                    self.mapToGlobal(selection_rect.topLeft()),
+                    self.mapToGlobal(selection_rect.bottomRight())
+                )
+                # 延迟一小段，等待遮罩窗口完全消失后再截图
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(100, lambda: self.perform_capture(global_rect))
+            else:
+                print("[Screenshot] 选区太小，已取消")
+
+    def perform_capture(self, global_rect):
+        screen = QApplication.screenAt(global_rect.center())
+        if not screen:
+            screen = QApplication.primaryScreen()
+            
+        # 抓取选区所在屏幕的全屏画面
+        pixmap = screen.grabWindow(0)
+        
+        # 将全局坐标转换为当前屏幕的局部坐标
+        screen_geom = screen.geometry()
+        local_rect = global_rect.translated(-screen_geom.x(), -screen_geom.y())
+        
+        # 乘以 DPI 缩放率转换为物理像素坐标
+        dpr = screen.devicePixelRatio()
+        physical_rect = QRect(
+            int(local_rect.x() * dpr),
+            int(local_rect.y() * dpr),
+            int(local_rect.width() * dpr),
+            int(local_rect.height() * dpr)
+        )
+        
+        cropped = pixmap.copy(physical_rect)
+        cropped.save(CONFIG["screenshot_path"])
+        print("[Screenshot] 自定义截图完成")
+        self.capture_complete.emit(global_rect)
+
+    def keyPressEvent(self, event):
+        # 按 ESC 取消截图
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide()
+            print("[Screenshot] 用户取消截图")
 
 # ==========================================
 # GUI: 设置窗口
@@ -175,19 +260,38 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("设置")
-        self.setFixedSize(350, 150)
+        self.setFixedWidth(400)
         
         layout = QVBoxLayout(self)
         
-        self.api_key_label = QLabel(f"{CONFIG['api_provider']} API Key:")
-        layout.addWidget(self.api_key_label)
-        
+        # API Key
+        layout.addWidget(QLabel("DeepSeek API Key:"))
         self.api_key_input = QLineEdit()
-        self.api_key_input.setPlaceholderText("请输入 sk- 开头的 API 密钥")
-        # 密码模式回显，但点击时可见
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
-        self.api_key_input.setText(CONFIG.get("api_key", ""))
         layout.addWidget(self.api_key_input)
+        
+        # 显示模式
+        layout.addWidget(QLabel("呈现模式:"))
+        self.display_mode_combo = QComboBox()
+        self.display_mode_combo.addItem("原位覆盖显示", "in_place")
+        self.display_mode_combo.addItem("居中悬浮显示", "floating")
+        layout.addWidget(self.display_mode_combo)
+        
+        # 字体大小
+        layout.addWidget(QLabel("字体大小 (px):"))
+        self.font_size_input = QSpinBox()
+        self.font_size_input.setRange(8, 72)
+        layout.addWidget(self.font_size_input)
+        
+        # 文本颜色
+        layout.addWidget(QLabel("文字颜色 (十六进制):"))
+        self.text_color_input = QLineEdit()
+        layout.addWidget(self.text_color_input)
+        
+        # 背景颜色
+        layout.addWidget(QLabel("背景颜色 (十六进制/RGBA):"))
+        self.bg_color_input = QLineEdit()
+        layout.addWidget(self.bg_color_input)
         
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -201,46 +305,54 @@ class SettingsDialog(QDialog):
         btn_layout.addWidget(self.cancel_btn)
         
         layout.addLayout(btn_layout)
+        self.load_ui_data()
+
+    def load_ui_data(self):
+        self.api_key_input.setText(CONFIG.get("api_key", ""))
+        self.font_size_input.setValue(CONFIG.get("font_size", 14))
+        self.text_color_input.setText(CONFIG.get("text_color", "#000000"))
+        self.bg_color_input.setText(CONFIG.get("bg_color", "#FAFAFA"))
+        
+        mode = CONFIG.get("display_mode", "in_place")
+        idx = self.display_mode_combo.findData(mode)
+        if idx >= 0:
+            self.display_mode_combo.setCurrentIndex(idx)
 
     def save_settings(self):
-        new_key = self.api_key_input.text().strip()
-        CONFIG["api_key"] = new_key
+        CONFIG["api_key"] = self.api_key_input.text().strip()
+        CONFIG["font_size"] = self.font_size_input.value()
+        CONFIG["text_color"] = self.text_color_input.text().strip()
+        CONFIG["bg_color"] = self.bg_color_input.text().strip()
+        CONFIG["display_mode"] = self.display_mode_combo.currentData()
+        
         save_config()
-        QMessageBox.information(self, "保存成功", "API Key 已保存！")
+        QMessageBox.information(self, "保存成功", "设置已保存，下次翻译时生效！")
         self.accept()
 
 # ==========================================
-# GUI 悬浮窗口
+# GUI: 悬浮结果窗口
 # ==========================================
 class FloatingWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.init_ui()
-        # 允许拖拽的内部状态
         self._is_tracking = False
         self._start_pos = None
 
     def init_ui(self):
-        # 无边框 + 窗口置顶
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
-        self.resize(CONFIG["win_width"], CONFIG["win_height"])
         
-        # 布局
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(5, 5, 5, 5)
         
-        # 文本框
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
-        # 简单的样式
-        self.text_edit.setStyleSheet("font-size: 14px; background-color: #FAFAFA; border: 1px solid #CCC;")
         layout.addWidget(self.text_edit)
         
-        # 按钮栏
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        self.copy_btn = QPushButton("一键复制")
+        self.copy_btn = QPushButton("复制")
         self.copy_btn.clicked.connect(self.copy_to_clipboard)
         btn_layout.addWidget(self.copy_btn)
         
@@ -249,6 +361,37 @@ class FloatingWindow(QWidget):
         btn_layout.addWidget(self.close_btn)
         
         layout.addLayout(btn_layout)
+        self.apply_styles()
+
+    def apply_styles(self):
+        font_size = CONFIG.get("font_size", 14)
+        text_color = CONFIG.get("text_color", "#000000")
+        bg_color = CONFIG.get("bg_color", "#FAFAFA")
+        
+        # 外部窗口背景可以完全透明或带点边框，这里将背景色赋给文本框
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {bg_color};
+                border: 1px solid #999;
+                border-radius: 5px;
+            }}
+            QTextEdit {{
+                font-size: {font_size}px;
+                color: {text_color};
+                background-color: transparent;
+                border: none;
+            }}
+            QPushButton {{
+                background-color: #E0E0E0;
+                color: #333;
+                border: 1px solid #CCC;
+                padding: 4px 10px;
+                border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background-color: #D0D0D0;
+            }}
+        """)
 
     def set_text(self, text: str):
         self.text_edit.setPlainText(text)
@@ -257,8 +400,7 @@ class FloatingWindow(QWidget):
         clipboard = QApplication.clipboard()
         clipboard.setText(self.text_edit.toPlainText())
         print("[GUI] 内容已复制到剪贴板")
-        
-    # --- 拖拽窗口实现 ---
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_tracking = True
@@ -280,14 +422,24 @@ class FloatingWindow(QWidget):
 class AppController:
     def __init__(self):
         self.app = QApplication(sys.argv)
-        self.app.setQuitOnLastWindowClosed(False)  # 保持后台运行
+        self.app.setQuitOnLastWindowClosed(False)
         self.window = FloatingWindow()
         self.settings_dlg = None
+        self.snipper = Snipper()
         
+        # --- 信号绑定 ---
+        self.controller_signals = ControllerSignals()
+        self.controller_signals.start_snipper.connect(self.show_snipper)
+        self.snipper.capture_complete.connect(self.on_capture_complete)
+        
+        self.signals = WorkerSignals()
+        self.signals.update_text.connect(self.window.set_text)
+        self.signals.show_window.connect(self.window.show)
+        self.signals.error_occurred.connect(self.handle_error)
+
         # --- 托盘图标设置 ---
         self.tray_icon = QSystemTrayIcon(self.app)
         
-        # 兼容 PyInstaller 打包后的资源路径
         if hasattr(sys, '_MEIPASS'):
             base_dir = sys._MEIPASS
         else:
@@ -299,7 +451,6 @@ class AppController:
             self.app.setWindowIcon(app_icon)
             self.tray_icon.setIcon(app_icon)
         else:
-            # Fallback 默认图标
             fallback_icon = self.app.style().standardIcon(self.app.style().StandardPixmap.SP_ComputerIcon)
             self.app.setWindowIcon(fallback_icon)
             self.tray_icon.setIcon(fallback_icon)
@@ -307,7 +458,7 @@ class AppController:
         tray_menu = QMenu()
         
         translate_action = QAction("截屏翻译", self.app)
-        translate_action.triggered.connect(self.trigger_workflow)
+        translate_action.triggered.connect(self.controller_signals.start_snipper.emit)
         tray_menu.addAction(translate_action)
         
         settings_action = QAction("设置", self.app)
@@ -322,15 +473,8 @@ class AppController:
         
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
-        # --- 托盘设置结束 ---
         
-        # 信号设置
-        self.signals = WorkerSignals()
-        self.signals.update_text.connect(self.window.set_text)
-        self.signals.show_window.connect(self.window.show)
-        self.signals.error_occurred.connect(self.handle_error)
-        
-        # 热键监听器
+        # --- 热键监听器 ---
         self.listener = keyboard.GlobalHotKeys({
             CONFIG["hotkey"]: self.on_hotkey_pressed
         })
@@ -344,18 +488,36 @@ class AppController:
     def show_settings(self):
         if not self.settings_dlg:
             self.settings_dlg = SettingsDialog()
-        # 每次显示前刷新一次 UI，防止外部文件被改动
-        self.settings_dlg.api_key_input.setText(CONFIG.get("api_key", ""))
+        self.settings_dlg.load_ui_data()
         self.settings_dlg.show()
         self.settings_dlg.raise_()
         self.settings_dlg.activateWindow()
 
     def on_hotkey_pressed(self):
         print(f"\n[System] 触发快捷键 {CONFIG['hotkey']}")
-        self.trigger_workflow()
+        # 必须通过信号触发 GUI 组件，因为当前处于 pynput 的后台线程
+        self.controller_signals.start_snipper.emit()
         
-    def trigger_workflow(self):
-        # 启动子线程执行耗时任务，避免阻塞 GUI 主线程
+    def show_snipper(self):
+        self.snipper.start_capture()
+        
+    def on_capture_complete(self, rect: QRect):
+        # 截图完毕，应用样式并调整窗口位置
+        self.window.apply_styles()
+        
+        if CONFIG.get("display_mode") == "in_place":
+            # 精确覆盖在截图的坐标上
+            self.window.setGeometry(rect)
+        else:
+            # 居中悬浮模式
+            self.window.resize(CONFIG["win_width"], CONFIG["win_height"])
+            # 简单计算让它在屏幕中间偏上的位置
+            screen_geom = QApplication.primaryScreen().geometry()
+            x = (screen_geom.width() - CONFIG["win_width"]) // 2
+            y = (screen_geom.height() - CONFIG["win_height"]) // 3
+            self.window.move(x, y)
+            
+        # 启动翻译线程
         threading.Thread(target=workflow_thread, args=(self.signals,), daemon=True).start()
 
     def quit_app(self):
