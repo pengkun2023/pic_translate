@@ -1,0 +1,21 @@
+# 虚拟环境
+pic_work/
+__pycache__/
+*.pyc
+
+# 配置文件（如果包含敏感信息）
+config.local.py
+.env
+
+# 临时文件
+*.tmp
+*.temp
+
+# 图片缓存或输出目录
+cache/
+output/
+temp/
+
+# IDE
+.vscode/
+.idea/
