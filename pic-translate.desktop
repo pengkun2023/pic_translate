@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=截屏翻译
+Comment=全局截屏并调用大模型进行翻译
+Exec=/usr/bin/pic-translate
+Icon=/usr/share/pixmaps/pic-translate.png
+Terminal=false
+Type=Application
+Categories=Utility;
+StartupNotify=true

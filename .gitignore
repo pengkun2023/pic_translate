@@ -22,8 +22,10 @@ temp/
 
 #  特定文件
 Prompt.md
-test_ds_httpx.py
-test_ds_openai.py
-test_response.py
-est_mock_empty.py
+test_*.py
 
+build/
+dist/
+*.spec
+*.deb
+pic-translate_*_amd64/
